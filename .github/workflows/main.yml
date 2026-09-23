@@ -1,0 +1,111 @@
+name: APK Builder
+
+on:
+  workflow_dispatch:
+    inputs:
+      project_url:
+        description: "Direct URL to the project archive"
+        required: true
+        type: string
+      apk_name:
+        description: "Output APK name"
+        required: false
+        default: "output"
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Prepare workspace
+        run: |
+          rm -rf project
+          mkdir -p project
+          mkdir -p output
+
+      - name: Download project
+        env:
+          PROJECT_URL: ${{ inputs.project_url }}
+        run: |
+          curl -fL --retry 3 --connect-timeout 20 \
+            "$PROJECT_URL" \
+            -o /tmp/project.zip
+
+      - name: Extract project
+        run: |
+          unzip -q /tmp/project.zip -d project
+
+          echo "===== PROJECT FILES ====="
+          find project -maxdepth 3 -type f | head -200
+
+      - name: Detect project root
+        run: |
+          if [ -f "project/AndroidManifest.xml" ]; then
+            echo "PROJECT_DIR=project" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          MANIFEST=$(find project -name AndroidManifest.xml -type f | head -1)
+
+          if [ -z "$MANIFEST" ]; then
+            echo "ERROR: AndroidManifest.xml was not found."
+            exit 1
+          fi
+
+          ROOT=$(dirname "$MANIFEST")
+          echo "PROJECT_DIR=$ROOT" >> "$GITHUB_ENV"
+
+      - name: Check Android project
+        run: |
+          echo "Project directory: $PROJECT_DIR"
+
+          test -f "$PROJECT_DIR/AndroidManifest.xml" \
+            || { echo "ERROR: AndroidManifest.xml missing"; exit 1; }
+
+          test -d "$PROJECT_DIR/res" \
+            || echo "WARNING: res directory not found"
+
+          test -d "$PROJECT_DIR/smali" \
+            || echo "WARNING: smali directory not found"
+
+          echo "===== PROJECT STRUCTURE ====="
+          find "$PROJECT_DIR" -maxdepth 2 -type d | sort
+
+      - name: Install Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Download Apktool
+        run: |
+          curl -fL \
+            https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar \
+            -o /tmp/apktool.jar
+
+          java -jar /tmp/apktool.jar --version
+
+      - name: Build APK
+        env:
+          APK_NAME: ${{ inputs.apk_name }}
+        run: |
+          mkdir -p output
+
+          java -jar /tmp/apktool.jar b "$PROJECT_DIR" \
+            -o "output/${APK_NAME}-unsigned.apk"
+
+      - name: Show APK
+        run: |
+          echo "===== BUILD OUTPUT ====="
+          ls -lh output/
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-output
+          path: output/*.apk
+          retention-days: 1
